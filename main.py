@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -19,7 +19,7 @@ from telegram.ext import (
 # SETTINGS
 # =========================================================
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.environ.get("BOT_TOKEN")
 
 ADMIN_ID = 8440165794
 
@@ -28,7 +28,9 @@ CARD_NUMBER = "6219861452365603"
 CARD_OWNER = "علی اسدنژاد"
 
 # Render port
-PORT = int(os.getenv("PORT", "10000"))
+# Render مقدار PORT را خودش تنظیم می‌کند.
+# اگر در محیط توسعه PORT وجود نداشت، 10000 استفاده می‌شود.
+PORT = int(os.environ.get("PORT", "10000"))
 
 DB_NAME = "aliasdvpn.db"
 
@@ -63,7 +65,6 @@ def init_db():
     conn = db()
     cur = conn.cursor()
 
-    # محصولات
     cur.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +78,6 @@ def init_db():
         )
     """)
 
-    # کاربران
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY,
@@ -86,7 +86,6 @@ def init_db():
         )
     """)
 
-    # سفارش‌ها
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +102,6 @@ def init_db():
         )
     """)
 
-    # کانفیگ‌ها
     cur.execute("""
         CREATE TABLE IF NOT EXISTS configs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,21 +141,87 @@ def save_user(user):
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"AliasdVPN Bot is running.")
+        try:
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "text/plain; charset=utf-8"
+            )
+            self.send_header(
+                "Cache-Control",
+                "no-cache"
+            )
+            self.end_headers()
+
+            self.wfile.write(
+                b"AliasdVPN Bot is running."
+            )
+
+        except Exception as e:
+            print(
+                f"HTTP GET error: {repr(e)}",
+                flush=True
+            )
+
+    def do_HEAD(self):
+        try:
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "text/plain; charset=utf-8"
+            )
+            self.end_headers()
+        except Exception as e:
+            print(
+                f"HTTP HEAD error: {repr(e)}",
+                flush=True
+            )
 
     def log_message(self, format, *args):
         return
 
 
+class RenderHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 def start_web_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    host = "0.0.0.0"
 
-    print(f"🌐 Web server started on port {PORT}")
+    try:
+        print(
+            "🌐 Starting Render HTTP server...",
+            flush=True
+        )
+        print(
+            f"🌐 Host: {host}",
+            flush=True
+        )
+        print(
+            f"🌐 PORT: {PORT}",
+            flush=True
+        )
 
-    server.serve_forever()
+        server = RenderHTTPServer(
+            (host, PORT),
+            HealthHandler
+        )
+
+        print(
+            f"✅ Render HTTP server is listening on "
+            f"{host}:{PORT}",
+            flush=True
+        )
+
+        server.serve_forever()
+
+    except Exception as e:
+        print(
+            f"❌ WEB SERVER ERROR: {repr(e)}",
+            flush=True
+        )
+        raise
 
 
 # =========================================================
@@ -304,7 +368,6 @@ async def show_shop(query):
         return
 
     text = "🛒 محصولات موجود:\n\n"
-
     buttons = []
 
     for product in products:
@@ -387,7 +450,6 @@ async def create_order(query, context):
 
     if not product:
         conn.close()
-
         await query.answer(
             "❌ محصول پیدا نشد.",
             show_alert=True
@@ -398,14 +460,12 @@ async def create_order(query, context):
 
     if stock <= 0:
         conn.close()
-
         await query.answer(
             "❌ این محصول موجود نیست.",
             show_alert=True
         )
         return
 
-    # جلوگیری از چند سفارش پرداخت نشده برای یک محصول توسط یک کاربر
     cur.execute("""
         SELECT id
         FROM orders
@@ -552,7 +612,6 @@ async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "لطفاً منتظر تأیید پرداخت بمانید."
     )
 
-    # ارسال رسید برای ادمین
     username = (
         f"@{user.username}"
         if user.username
@@ -781,7 +840,6 @@ async def approve_order(query, context):
         )
         return
 
-    # پیدا کردن اولین کانفیگ آزاد
     cur.execute("""
         SELECT id, config
         FROM configs
@@ -810,7 +868,6 @@ async def approve_order(query, context):
 
     config_id, config_value = config
 
-    # رزرو کانفیگ
     cur.execute("""
         UPDATE configs
         SET
@@ -823,7 +880,6 @@ async def approve_order(query, context):
         config_id
     ))
 
-    # تأیید سفارش
     cur.execute("""
         UPDATE orders
         SET
@@ -836,10 +892,27 @@ async def approve_order(query, context):
         order_id
     ))
 
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM configs
+        WHERE product_id = ?
+        AND status = 'available'
+    """, (product_id,))
+
+    remaining_stock = cur.fetchone()[0]
+
+    cur.execute("""
+        UPDATE products
+        SET stock = ?
+        WHERE id = ?
+    """, (
+        remaining_stock,
+        product_id
+    ))
+
     conn.commit()
     conn.close()
 
-    # پیام به مشتری
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -857,20 +930,29 @@ async def approve_order(query, context):
         customer_sent = True
 
     except Exception as e:
-        print(f"Customer delivery error: {e}")
+        print(
+            f"Customer delivery error: {repr(e)}",
+            flush=True
+        )
         customer_sent = False
 
     await query.answer("✅ سفارش تأیید شد.")
 
-    await query.edit_message_caption(
-        caption=(
-            f"✅ پرداخت تأیید شد\n\n"
-            f"🧾 سفارش: #{order_id}\n"
-            f"📦 محصول: {product_name}\n"
-            f"💰 مبلغ: {price}\n"
-            f"🔐 کانفیگ تحویل شد: {'بله' if customer_sent else 'خیر'}"
+    try:
+        await query.edit_message_caption(
+            caption=(
+                f"✅ پرداخت تأیید شد\n\n"
+                f"🧾 سفارش: #{order_id}\n"
+                f"📦 محصول: {product_name}\n"
+                f"💰 مبلغ: {price}\n"
+                f"🔐 کانفیگ تحویل شد: {'بله' if customer_sent else 'خیر'}"
+            )
         )
-    )
+    except Exception as e:
+        print(
+            f"Admin caption update error: {repr(e)}",
+            flush=True
+        )
 
 
 # =========================================================
@@ -936,7 +1018,6 @@ async def reject_order(query, context):
     conn.commit()
     conn.close()
 
-    # پیام به مشتری
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -950,18 +1031,27 @@ async def reject_order(query, context):
         )
 
     except Exception as e:
-        print(f"Customer rejection message error: {e}")
+        print(
+            f"Customer rejection message error: {repr(e)}",
+            flush=True
+        )
 
     await query.answer("❌ سفارش رد شد.")
 
-    await query.edit_message_caption(
-        caption=(
-            f"❌ پرداخت رد شد\n\n"
-            f"🧾 سفارش: #{order_id}\n"
-            f"📦 محصول: {product_name}\n"
-            f"💰 مبلغ: {price}"
+    try:
+        await query.edit_message_caption(
+            caption=(
+                f"❌ پرداخت رد شد\n\n"
+                f"🧾 سفارش: #{order_id}\n"
+                f"📦 محصول: {product_name}\n"
+                f"💰 مبلغ: {price}"
+            )
         )
-    )
+    except Exception as e:
+        print(
+            f"Admin rejection caption update error: {repr(e)}",
+            flush=True
+        )
 
 
 # =========================================================
@@ -1135,13 +1225,15 @@ async def product_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def product_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        stock = int(update.message.text)
+        int(update.message.text)
     except ValueError:
         await update.message.reply_text(
             "❌ موجودی باید یک عدد باشد.\n"
             "مثلاً: 10"
         )
         return STOCK
+
+    stock = int(update.message.text)
 
     if stock < 0:
         await update.message.reply_text(
@@ -1337,7 +1429,6 @@ async def save_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         config_value
     ))
 
-    # بروزرسانی stock محصول
     cur.execute("""
         SELECT COUNT(*)
         FROM configs
@@ -1543,50 +1634,27 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # -------------------------
-    # HOME
-    # -------------------------
-
     if data == "home":
-
         await query.edit_message_text(
             "🏠 فروشگاه AliasdVPN\n\n"
             "گزینه موردنظر را انتخاب کنید:",
             reply_markup=main_menu(user_id)
         )
 
-    # -------------------------
-    # SHOP
-    # -------------------------
-
     elif data == "shop":
         await show_shop(query)
-
-    # -------------------------
-    # ORDERS
-    # -------------------------
 
     elif data == "orders":
         await show_user_orders(query)
 
-    # -------------------------
-    # SUPPORT
-    # -------------------------
-
     elif data == "support":
-
         await query.edit_message_text(
             "💬 پشتیبانی\n\n"
             "برای ارتباط با پشتیبانی، با مدیر فروشگاه تماس بگیرید.",
             reply_markup=back_home_keyboard()
         )
 
-    # -------------------------
-    # ADMIN
-    # -------------------------
-
     elif data == "admin":
-
         if user_id != ADMIN_ID:
             await query.answer(
                 "⛔ دسترسی ندارید.",
@@ -1600,51 +1668,23 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_menu()
         )
 
-    # -------------------------
-    # PRODUCTS
-    # -------------------------
-
     elif data == "products":
         await show_products_admin(query)
-
-    # -------------------------
-    # ADMIN ORDERS
-    # -------------------------
 
     elif data == "admin_orders":
         await show_admin_orders(query)
 
-    # -------------------------
-    # STATS
-    # -------------------------
-
     elif data == "stats":
         await show_stats(query)
-
-    # -------------------------
-    # BUY
-    # -------------------------
 
     elif data.startswith("buy_"):
         await create_order(query, context)
 
-    # -------------------------
-    # CANCEL ORDER
-    # -------------------------
-
     elif data.startswith("cancel_order_"):
         await cancel_order(query)
 
-    # -------------------------
-    # APPROVE
-    # -------------------------
-
     elif data.startswith("approve_"):
         await approve_order(query, context)
-
-    # -------------------------
-    # REJECT
-    # -------------------------
 
     elif data.startswith("reject_"):
         await reject_order(query, context)
@@ -1655,7 +1695,25 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================================
 
 async def error_handler(update, context):
-    print(f"ERROR: {context.error}")
+    print(
+        f"ERROR: {repr(context.error)}",
+        flush=True
+    )
+
+
+# =========================================================
+# CANCEL ADD PRODUCT
+# =========================================================
+
+async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "❌ افزودن محصول لغو شد.",
+        reply_markup=admin_menu()
+    )
+
+    return ConversationHandler.END
 
 
 # =========================================================
@@ -1669,18 +1727,34 @@ def main():
             "BOT_TOKEN تنظیم نشده است."
         )
 
-    # Database
+    print(
+        f"🔌 Render PORT environment variable: {PORT}",
+        flush=True
+    )
+
     init_db()
 
-    # Start Render web server
+    # =====================================================
+    # RENDER WEB SERVER
+    # =====================================================
+
     web_thread = threading.Thread(
         target=start_web_server,
+        name="render-web-server",
         daemon=True
     )
 
     web_thread.start()
 
-    # Telegram application
+    print(
+        f"🌐 Render HTTP server thread started on port {PORT}",
+        flush=True
+    )
+
+    # =====================================================
+    # TELEGRAM APPLICATION
+    # =====================================================
+
     app = (
         Application
         .builder()
@@ -1701,7 +1775,6 @@ def main():
         ],
 
         states={
-
             NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -1773,7 +1846,6 @@ def main():
         ],
 
         states={
-
             CONFIG_PRODUCT: [
                 CallbackQueryHandler(
                     select_config_product,
@@ -1808,8 +1880,7 @@ def main():
         )
     )
 
-    # این دو ConversationHandler باید قبل از CallbackQueryHandler
-    # عمومی ثبت شوند.
+    # ConversationHandlerها قبل از Callback عمومی
     app.add_handler(
         add_product_conversation
     )
@@ -1818,7 +1889,7 @@ def main():
         add_config_conversation
     )
 
-    # رسید عکس
+    # دریافت رسید عکس
     app.add_handler(
         MessageHandler(
             filters.PHOTO,
@@ -1837,29 +1908,23 @@ def main():
         error_handler
     )
 
-    print("🤖 AliasdVPN Bot is running...")
-    print(f"🌐 Render PORT: {PORT}")
+    print(
+        "🤖 AliasdVPN Bot is running...",
+        flush=True
+    )
 
-    # Polling
+    print(
+        f"🌐 Render PORT: {PORT}",
+        flush=True
+    )
+
+    # =====================================================
+    # TELEGRAM POLLING
+    # =====================================================
+
     app.run_polling(
         drop_pending_updates=True
     )
-
-
-# =========================================================
-# CANCEL ADD PRODUCT
-# =========================================================
-
-async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    context.user_data.clear()
-
-    await update.message.reply_text(
-        "❌ افزودن محصول لغو شد.",
-        reply_markup=admin_menu()
-    )
-
-    return ConversationHandler.END
 
 
 # =========================================================
