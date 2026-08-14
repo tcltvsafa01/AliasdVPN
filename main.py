@@ -1,5 +1,4 @@
 import os
-import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -14,7 +13,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def main():
+def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN تنظیم نشده است.")
 
@@ -23,8 +22,9 @@ async def main():
     app.add_handler(CommandHandler("start", start))
 
     print("🤖 AliasdVPN Bot is running...")
-    await app.run_polling()
+
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
